@@ -1,4 +1,4 @@
-# RoboLaunch 🚀
+# RoboLaunch 
 
 **Fork/rebuild de VibeStarter** — Lance plusieurs agents IA (Claude, Codex, Agy, Aider) dans une VM Linux isolée (QEMU) et les connecte à Roblox Studio via MCP.
 
