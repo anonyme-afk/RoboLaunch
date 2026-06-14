@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8"/>
+<title>RoboLaunch Setup — Aperçu</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;font-family:'Segoe UI',sans-serif}
+body{background:#1a1a2e;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
+.window{background:#f0f0f0;border:1px solid #999;border-radius:4px;width:500px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+.titlebar{background:linear-gradient(to right,#1a237e,#283593);height:32px;display:flex;align-items:center;padding:0 12px;border-radius:4px 4px 0 0}
+.titlebar-txt{color:#fff;font-size:12px;font-weight:600;flex:1}
+.titlebar-btns{display:flex;gap:4px}
+.tb-btn{width:14px;height:14px;border-radius:2px;border:1px solid rgba(255,255,255,.3);font-size:9px;color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer}
+.wizard{display:flex}
+.sidebar{width:164px;height:314px;background:linear-gradient(160deg,#0d0d0f 0%,#1a1a2e 40%,#0f0f20 100%);flex-shrink:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;border-right:1px solid #ccc}
+.sidebar-logo{display:flex;flex-direction:column;align-items:center;gap:10px}
+.sidebar-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px}
+.sg{width:28px;height:28px;border-radius:4px;background:#f97316}
+.sg:nth-child(2){opacity:.6}
+.sg:nth-child(3){opacity:.6}
+.sg:nth-child(4){opacity:.3}
+.sidebar-name{color:#f97316;font-size:15px;font-weight:800;letter-spacing:.05em}
+.sidebar-ver{color:#6b6b80;font-size:10px}
+.main-content{flex:1;background:#fff;padding:24px}
+.page{display:none}
+.page.active{display:block}
+.page-title{font-size:14px;font-weight:700;color:#1a237e;margin-bottom:4px}
+.page-sub{font-size:11px;color:#555;margin-bottom:16px;line-height:1.5}
+.separator{height:1px;background:#ddd;margin:12px 0}
+.welcome-text{font-size:11px;color:#333;line-height:1.7;background:#f8f8f8;padding:12px;border:1px solid #e0e0e0;border-radius:3px}
+.dir-box{display:flex;gap:6px;margin:10px 0}
+.dir-input{flex:1;border:1px solid #aaa;padding:5px 8px;font-size:11px;border-radius:2px}
+.btn-browse{background:#e0e0e0;border:1px solid #aaa;padding:5px 10px;font-size:11px;cursor:pointer;border-radius:2px}
+.tasks{display:flex;flex-direction:column;gap:10px;margin-top:4px}
+.task-group{font-size:11px;font-weight:700;color:#333;margin-bottom:4px}
+.task-item{display:flex;align-items:center;gap:8px;font-size:11px;color:#333}
+.task-item input{accent-color:#1a237e}
+.progress-wrap{margin:20px 0}
+.progress-label{font-size:11px;color:#555;margin-bottom:6px}
+.progress-bar{height:18px;background:#e0e0e0;border:1px solid #aaa;border-radius:2px;overflow:hidden}
+.progress-fill{height:100%;background:linear-gradient(90deg,#1a237e,#3949ab);width:0%;transition:width .3s}
+.progress-file{font-size:10px;color:#777;margin-top:4px;font-family:monospace}
+.finish-icon{font-size:40px;text-align:center;margin:10px 0}
+.finish-text{font-size:11px;color:#333;line-height:1.7}
+.finish-launch{display:flex;align-items:center;gap:8px;margin-top:12px;font-size:11px;color:#333}
+
+.nav{display:flex;align-items:center;padding:10px 16px;background:#f0f0f0;border-top:1px solid #ccc;gap:8px;border-radius:0 0 0 0}
+.nav-sep{flex:1}
+.btn{padding:6px 20px;font-size:12px;cursor:pointer;border-radius:2px;font-weight:600}
+.btn-next{background:#1a237e;color:#fff;border:none}
+.btn-next:hover{background:#283593}
+.btn-back{background:#e0e0e0;color:#333;border:1px solid #aaa}
+.btn-cancel{background:#e0e0e0;color:#333;border:1px solid #aaa}
+.step-indicator{display:flex;gap:4px;margin-bottom:0}
+.step{width:8px;height:8px;border-radius:50%;background:#ccc}
+.step.done{background:#4CAF50}
+.step.active{background:#1a237e}
+.pager{display:flex;justify-content:center;gap:4px;padding:6px 0}
+.dot{width:8px;height:8px;border-radius:50%;background:#ccc;cursor:pointer;transition:background .2s}
+.dot.active{background:#1a237e}
+</style>
+</head>
+<body>
+<div class="window">
+  <div class="titlebar">
+    <div class="titlebar-txt">🧙 Assistant d'installation — RoboLaunch 1.0.0</div>
+    <div class="titlebar-btns">
+      <div class="tb-btn">─</div>
+      <div class="tb-btn">✕</div>
+    </div>
+  </div>
+  <div class="wizard">
+    <div class="sidebar">
+      <div class="sidebar-logo">
+        <div class="sidebar-grid">
+          <div class="sg"></div><div class="sg"></div>
+          <div class="sg"></div><div class="sg"></div>
+        </div>
+        <div class="sidebar-name">RoboLaunch</div>
+        <div class="sidebar-ver">v1.0.0</div>
+      </div>
+    </div>
+    <div class="main-content">
+
+      <!-- PAGE 1 : Bienvenue -->
+      <div class="page active" id="p1">
+        <div class="page-title">Bienvenue dans l'assistant d'installation de RoboLaunch</div>
+        <div class="separator"></div>
+        <div class="welcome-text">
+          Cet assistant va installer <strong>RoboLaunch 1.0.0</strong> sur votre ordinateur.<br><br>
+          RoboLaunch lance des agents IA (Claude, Codex, Agy, Aider) dans une VM Linux isolée et les connecte à Roblox Studio via MCP.<br><br>
+          <strong>Fermez toutes les autres applications avant de continuer.</strong><br><br>
+          Cliquez sur <em>Suivant</em> pour continuer.
+        </div>
+      </div>
+
+      <!-- PAGE 2 : Dossier -->
+      <div class="page" id="p2">
+        <div class="page-title">Sélectionnez le dossier d'installation</div>
+        <div class="page-sub">Où doit être installé RoboLaunch ?</div>
+        <div class="separator"></div>
+        <div style="font-size:11px;color:#555;margin-bottom:8px">Dossier de destination :</div>
+        <div class="dir-box">
+          <input class="dir-input" value="C:\Program Files\RoboLaunch" readonly/>
+          <button class="btn-browse">Parcourir…</button>
+        </div>
+        <div style="font-size:10px;color:#888;margin-top:4px">
+          Espace requis : ~850 MB &nbsp;|&nbsp; Espace disponible : 42,3 GB
+        </div>
+      </div>
+
+      <!-- PAGE 3 : Options -->
+      <div class="page" id="p3">
+        <div class="page-title">Tâches supplémentaires</div>
+        <div class="page-sub">Quelles tâches doit effectuer l'assistant ?</div>
+        <div class="separator"></div>
+        <div class="tasks">
+          <div class="task-group">Raccourcis :</div>
+          <label class="task-item"><input type="checkbox" checked/> Créer un raccourci sur le Bureau</label>
+          <div class="task-group" style="margin-top:8px">Options :</div>
+          <label class="task-item"><input type="checkbox"/> Lancer RoboLaunch au démarrage de Windows</label>
+        </div>
+      </div>
+
+      <!-- PAGE 4 : Installation -->
+      <div class="page" id="p4">
+        <div class="page-title">Installation en cours…</div>
+        <div class="separator"></div>
+        <div class="progress-wrap">
+          <div class="progress-label">Extraction des fichiers :</div>
+          <div class="progress-bar"><div class="progress-fill" id="pfill"></div></div>
+          <div class="progress-file" id="pfile">Préparation…</div>
+        </div>
+      </div>
+
+      <!-- PAGE 5 : Terminé -->
+      <div class="page" id="p5">
+        <div class="page-title">Installation terminée !</div>
+        <div class="separator"></div>
+        <div class="finish-icon">🎉</div>
+        <div class="finish-text">
+          <strong>RoboLaunch 1.0.0</strong> a été installé avec succès sur votre ordinateur.<br><br>
+          L'application a été ajoutée à votre Bureau et au Menu Démarrer.
+        </div>
+        <div class="finish-launch">
+          <input type="checkbox" checked id="chkLaunch"/>
+          <label for="chkLaunch">Lancer RoboLaunch maintenant</label>
+        </div>
+      </div>
+
+    </div>
+  </div>
+  <div class="nav">
+    <div class="pager" id="pager">
+      <div class="dot active"></div>
+      <div class="dot"></div>
+      <div class="dot"></div>
+      <div class="dot"></div>
+      <div class="dot"></div>
+    </div>
+    <div class="nav-sep"></div>
+    <button class="btn btn-back" id="btnBack" onclick="goBack()" style="display:none">◀ Précédent</button>
+    <button class="btn btn-next" id="btnNext" onclick="goNext()">Suivant ▶</button>
+    <button class="btn btn-cancel" onclick="alert('Annulation simulée')">Annuler</button>
+  </div>
+</div>
+
+<script>
+let cur = 1;
+const total = 5;
+const files = [
+  'robo-launch.exe','WebView2Loader.dll','vm/qemu-system-x86_64.exe',
+  'vm/robolaunch-guest.squashfs','vm/vmlinuz','vm/initrd.img','vm/gvproxy.exe'
+];
+
+function updateUI() {
+  document.querySelectorAll('.page').forEach((p,i) => p.classList.toggle('active', i+1===cur));
+  document.querySelectorAll('.dot').forEach((d,i) => d.classList.toggle('active', i+1===cur));
+  document.getElementById('btnBack').style.display = cur > 1 && cur < 5 ? '' : 'none';
+  const btn = document.getElementById('btnNext');
+  if (cur===5) { btn.textContent = '✓ Terminer'; }
+  else if (cur===4) { btn.style.display='none'; }
+  else { btn.textContent = 'Suivant ▶'; btn.style.display=''; }
+}
+
+function goNext() {
+  if (cur===3) { cur=4; updateUI(); simulateInstall(); return; }
+  if (cur===5) { alert('✅ RoboLaunch installé avec succès !'); return; }
+  cur++; updateUI();
+}
+function goBack() { if(cur>1){cur--;updateUI();} }
+
+function simulateInstall() {
+  const fill = document.getElementById('pfill');
+  const file = document.getElementById('pfile');
+  let p = 0, fi = 0;
+  const interval = setInterval(() => {
+    p += Math.random() * 12 + 3;
+    if (p >= 100) { p = 100; clearInterval(interval); cur=5; updateUI(); }
+    fill.style.width = p + '%';
+    if (fi < files.length) { file.textContent = 'Extraction : ' + files[fi++]; }
+  }, 200);
+}
+</script>
+</body>
+</html>

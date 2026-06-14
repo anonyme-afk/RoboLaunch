@@ -1,0 +1,32 @@
+#!/bin/sh
+# Configure the guest's virtio-net interface.
+#
+# gvproxy hands out a deterministic layout:
+#   guest IP   = 10.0.2.15/24
+#   gateway    = 10.0.2.2   (maps to host's 127.0.0.1)
+#   DNS server = 10.0.2.3
+#
+# We hard-code all three instead of running a DHCP client —
+# Ubuntu's systemd-networkd is overbuilt for our case (sandbox
+# hooks fail on the squashfs root) and pulling in `dhcpcd` as a
+# standalone daemon adds moving parts for no gain. gvproxy keeps
+# these values stable, and the host-loopback passthrough that
+# everything depends on is what `10.0.2.2` routes to anyway.
+
+set -e
+
+# Pick the first non-loopback interface. Normally `ens4` on our
+# QEMU machine type, but `altname enp0s4` exists and the kernel
+# occasionally renames between boots — glob to avoid pinning a
+# specific name.
+IFACE=$(ip -o link show | awk -F': ' '$2 !~ /^lo$/ {print $2; exit}')
+if [ -z "${IFACE}" ]; then
+    echo "robolaunch-net-up: no non-loopback interface found" >&2
+    exit 1
+fi
+
+ip link set "${IFACE}" up
+ip addr add 10.0.2.15/24 dev "${IFACE}" 2>/dev/null || true
+ip route add default via 10.0.2.2 dev "${IFACE}" 2>/dev/null || true
+
+echo "robolaunch-net-up: ${IFACE} configured (10.0.2.15/24, gw 10.0.2.2)"

@@ -1,0 +1,44 @@
+#!/bin/sh
+# Install the host app's ephemeral ssh public key as app-user's
+# authorized_keys, read out of the kernel command line.
+#
+# The host passes `robolaunch.authkey=<base64>` via QEMU's `-append`
+# (see `vm::lifecycle::build_qemu_args`). The encoded payload is the
+# literal `authorized_keys` line, base64'd to survive the shell
+# tokenizer in `/proc/cmdline`.
+#
+# Kernel cmdline was picked over QEMU `-fw_cfg` because the
+# `qemu_fw_cfg` sysfs driver needs an ACPI DMA setup that Ubuntu's
+# `linux-image-virtual` doesn't enable by default — `/proc/cmdline`
+# is always there.
+#
+# We overwrite on every boot: the host rotates the keypair per
+# app launch, so a stale entry from a previous run would be noise.
+
+set -eu
+
+KEYDIR=/home/app-user/.ssh
+TARGET="${KEYDIR}/authorized_keys"
+
+AUTHKEY_B64=$(tr ' ' '\n' < /proc/cmdline \
+    | sed -n 's/^robolaunch\.authkey=//p' \
+    | head -1)
+
+if [ -z "${AUTHKEY_B64}" ]; then
+    echo "robolaunch-authkeys: no robolaunch.authkey on /proc/cmdline — skipping" >&2
+    exit 0
+fi
+
+AUTHKEY_LINE=$(printf '%s' "${AUTHKEY_B64}" | base64 -d 2>/dev/null || true)
+if [ -z "${AUTHKEY_LINE}" ]; then
+    echo "robolaunch-authkeys: base64 decode failed" >&2
+    exit 1
+fi
+
+mkdir -p "${KEYDIR}"
+chmod 700 "${KEYDIR}"
+printf '%s\n' "${AUTHKEY_LINE}" > "${TARGET}"
+chown -R app-user:app-user "${KEYDIR}"
+chmod 600 "${TARGET}"
+
+echo "robolaunch-authkeys: installed authorized_keys (${#AUTHKEY_LINE} chars)"

@@ -1,0 +1,28 @@
+# Rust
+target/
+Cargo.lock
+
+# Node
+node_modules/
+dist/
+frontend/dist/
+
+# VM files (trop lourds)
+src-tauri/resources/vm/*.squashfs
+src-tauri/resources/vm/vmlinuz
+src-tauri/resources/vm/initrd.img
+src-tauri/resources/vm/*.exe
+src-tauri/resources/vm/*.dll
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Secrets
+.env
+*.key
+*.pem

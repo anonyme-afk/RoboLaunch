@@ -1,0 +1,33 @@
+#!/bin/bash
+# First-boot generator for the guest sshd's host keys.
+#
+# sshd_config.d/90-robolaunch.conf points HostKey at
+# `/home/app-user/.ssh/ssh_host_{ed25519,rsa}_key`. That directory
+# lives on the qcow2 user volume (mounted at /home/app-user) which
+# starts empty, so sshd refuses to start until these exist. This
+# script fills them on first boot.
+#
+# Runs as a oneshot systemd unit with `Before=ssh.service ssh.socket`
+# + `ConditionPathExists=!<ed25519-key>`, so it's a no-op on every
+# boot after the first.
+
+set -euo pipefail
+
+KEYDIR=/home/app-user/.ssh
+
+mkdir -p "$KEYDIR"
+chmod 700 "$KEYDIR"
+
+# ed25519 only — fast (tens of ms) and it's what the app's russh
+# client uses. RSA keygen at 3072 bit takes ~2 minutes under TCG
+# with a cold entropy pool (virtio-rng helps but not enough), and
+# every modern ssh client prefers ed25519 when offered. If an
+# oncall ever needs to shell in from a legacy client, `ssh -o
+# HostKeyAlgorithms=+ssh-ed25519` is a one-flag workaround.
+if [ ! -f "$KEYDIR/ssh_host_ed25519_key" ]; then
+    ssh-keygen -t ed25519 -N '' -f "$KEYDIR/ssh_host_ed25519_key" -q \
+        -C "robolaunch-guest $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+fi
+
+chmod 600 "$KEYDIR/ssh_host_ed25519_key"
+chmod 644 "$KEYDIR/ssh_host_ed25519_key.pub"

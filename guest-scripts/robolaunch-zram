@@ -1,0 +1,88 @@
+#!/bin/sh
+# Configure a small zram swap device as an emergency pressure valve.
+#
+# This is not the primary regulator. The normal contract path is:
+# MemoryHigh slows allocations, robolaunch-warden freezes the heaviest
+# agent, and the user can resume it later. zram only absorbs short
+# allocation cliffs so they do not become global OOMs before the warden
+# gets a tick.
+
+set -eu
+
+DEVICE=/dev/zram0
+SYS=/sys/block/zram0
+
+log() {
+    echo "robolaunch-zram: $*"
+}
+
+start() {
+    if swapon --noheadings --show=NAME 2>/dev/null | grep -qx "$DEVICE"; then
+        log "$DEVICE already active"
+        return 0
+    fi
+
+    if ! modprobe zram 2>/dev/null; then
+        log "zram module unavailable; continuing without swap"
+        return 0
+    fi
+
+    if [ ! -e "$SYS/disksize" ] && [ -r /sys/class/zram-control/hot_add ]; then
+        cat /sys/class/zram-control/hot_add >/dev/null 2>&1 || true
+    fi
+    if [ ! -e "$SYS/disksize" ]; then
+        log "zram0 unavailable after modprobe; continuing without swap"
+        return 0
+    fi
+
+    if [ -e "$SYS/reset" ]; then
+        echo 1 > "$SYS/reset" 2>/dev/null || true
+    fi
+
+    if [ -w "$SYS/comp_algorithm" ]; then
+        if grep -qw zstd "$SYS/comp_algorithm" 2>/dev/null; then
+            echo zstd > "$SYS/comp_algorithm" 2>/dev/null || true
+        elif grep -qw lz4 "$SYS/comp_algorithm" 2>/dev/null; then
+            echo lz4 > "$SYS/comp_algorithm" 2>/dev/null || true
+        fi
+    fi
+
+    mem_mb=$(awk '/^MemTotal:/{printf "%d", $2 / 1024; exit}' /proc/meminfo)
+    size_mb=$(( mem_mb / 4 ))
+    if [ "$size_mb" -lt 1024 ]; then
+        size_mb=1024
+    elif [ "$size_mb" -gt 4096 ]; then
+        size_mb=4096
+    fi
+
+    echo "${size_mb}M" > "$SYS/disksize"
+    if ! mkswap "$DEVICE" >/dev/null 2>&1; then
+        log "mkswap failed; continuing without swap"
+        return 0
+    fi
+    if ! swapon -p 100 "$DEVICE" >/dev/null 2>&1; then
+        log "swapon failed; continuing without swap"
+        return 0
+    fi
+    log "enabled $DEVICE size=${size_mb}M"
+}
+
+stop() {
+    swapoff "$DEVICE" >/dev/null 2>&1 || true
+    if [ -e "$SYS/reset" ]; then
+        echo 1 > "$SYS/reset" 2>/dev/null || true
+    fi
+}
+
+case "${1:-start}" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    *)
+        echo "usage: $0 [start|stop]" >&2
+        exit 2
+        ;;
+esac

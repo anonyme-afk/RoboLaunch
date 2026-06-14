@@ -1,0 +1,204 @@
+#!/bin/bash
+# robolaunch-warden — in-guest agent regulator.
+#
+# Two responsibilities, in priority order:
+#
+#   1. **Pressure-based freeze (poll loop).**
+#      Sustained CPU/memory/IO PSI on the user slice, or a guest OOM
+#      kill counter delta. Catches the case where awake agents
+#      themselves overload the slice — freezes the heaviest, one at
+#      a time, with a cooldown so the UI shows pauses gradually.
+#      Socket pressure is logged as evidence, but never freezes
+#      agents by itself: cgroup.freeze pauses work without closing
+#      TCP sockets, so socket counts alone are not proof that pausing
+#      one agent will restore control-path responsiveness.
+#
+#      No absolute `memory.current ≥ X %` trigger: cgroup.freeze
+#      suspends work but does not release RSS, so any threshold
+#      that fires above the cumulative RSS of N idle agents will
+#      stay tripped after the freeze and re-freeze on every cooldown
+#      until almost nobody is awake — a runaway loop with no real
+#      pressure behind it. PSI is the canonical signal of actual
+#      reclaim happening and self-clears once the kernel stops
+#      throttling, so it is the right authority here.
+#
+#   2. **Reason tagging.** Each freeze writes a per-agent file
+#      `/run/robolaunch/<agent_id>.reason` containing `pressure`.
+#      The host reads this alongside the cgroup state and surfaces it
+#      on `vm://agent-frozen`, so the UI can explain why the agent was
+#      paused.
+#
+# Deliberately no count-based active-agent cap: the contract is not
+# "N agents max", it is "launch what the user asks, slow down under
+# pressure, then pause the heaviest work if the VM is actually at risk".
+# Static active-agent caps waste capable hosts and hide the real bottleneck.
+#
+# Runs in `system.slice` (CPUWeight=10000) so it stays scheduled
+# even when user.slice is bursting V8 inits. Independent of sshd
+# / russh — the entire freeze pipeline is local.
+
+set -u
+
+readonly SLICE=/sys/fs/cgroup/user.slice/user-1000.slice
+readonly STATE_DIR=/run/robolaunch
+mkdir -p "$STATE_DIR"
+
+readonly PSI_SPIKE_THRESHOLD=60
+readonly SUSTAINED_PSI_THRESHOLD=25
+readonly SUSTAINED_PSI_SECONDS=5
+readonly POLL_SEC=1
+readonly HEARTBEAT_SEC=10
+# Freeze cooldowns are aligned on the kernel's PSI avg10 sliding
+# window: a freeze takes ~10 s to fully reflect in PSI, so reacting
+# faster means re-firing on the same pressure signal that the
+# previous freeze was about to dissolve. Result was a runaway
+# cascade (2026-05-02 stress test: 6 freezes in 30 s, all on idle
+# claude-code TUIs of similar RSS, while the actual heaviest
+# allocators kept growing). 15 s normal / 10 s panic gives the
+# avg10 window time to update before the next decision, while
+# panic stays faster than normal so a real OOM-imminent burst
+# still gets multiple freezes per minute.
+readonly NORMAL_COOLDOWN_SEC=15
+readonly PANIC_COOLDOWN_SEC=10
+readonly PANIC_PSI_THRESHOLD=85
+readonly NETWORK_DIAG_MIN_TCP=48
+readonly NETWORK_DIAG_MIN_AWAKE=3
+readonly NETWORK_DIAG_PER_AGENT=12
+readonly NETWORK_SWARM_MIN_AWAKE=8
+readonly NETWORK_SWARM_MIN_TCP=60
+readonly NETWORK_DIAG_COOLDOWN_SEC=30
+last_heartbeat_epoch=0
+last_freeze_epoch=0
+last_network_diag_epoch=0
+last_oom_kill_count=""
+sustained_cpu_psi_count=0
+sustained_io_psi_count=0
+sustained_mem_psi_count=0
+trigger_reasons=""
+psi_next_count=0
+
+log() {
+    logger -t robolaunch-warden "$*"
+    echo "$*"
+}
+
+# shellcheck source=/usr/local/lib/robolaunch-warden-lib.sh
+. /usr/local/lib/robolaunch-warden-lib.sh
+
+log "started, poll=${POLL_SEC}s psi_spike=${PSI_SPIKE_THRESHOLD}% psi_sustained=${SUSTAINED_PSI_THRESHOLD}%/${SUSTAINED_PSI_SECONDS}s cooldown=${NORMAL_COOLDOWN_SEC}s/${PANIC_COOLDOWN_SEC}s panic_psi=${PANIC_PSI_THRESHOLD}% mode=pressure-only network_socket_mode=diagnostic-only"
+
+# Boot-time hardware fingerprint. Logged once so a client report
+# ("freeze at N agents") immediately surfaces the VM's vCPU/RAM class
+# without a second round-trip.
+log "boot fingerprint: nproc=$(nproc) mem_total_kb=$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo) tcp_established=$(count_tcp_established)"
+
+probe_psi_sources
+
+while true; do
+    sleep "$POLL_SEC"
+
+    # Cleanup stale state files on every tick. Cheap (file-system
+    # globbing in /run, typically < 25 entries) and keeps STATE_DIR
+    # consistent with the actual cgroup state even when scopes are
+    # thawed externally (Resume button) or vanish (agent exit).
+    cleanup_stale_state
+
+    mem_high=$(cat "$SLICE/memory.high" 2>/dev/null || echo max)
+    mem_current=$(cat "$SLICE/memory.current" 2>/dev/null || echo 0)
+    cpu_psi=$(read_cpu_psi_some)
+    io_psi=$(read_io_psi_some)
+    mem_psi=$(read_mem_psi_some)
+    oom_kill_count=$(read_oom_kill_count)
+    now=$(date +%s)
+    awake_count=$(count_awake)
+    tcp_established=$(count_tcp_established)
+    network_pressure=0
+    swarm_network_pressure=0
+    network_diag_threshold=$(( awake_count * NETWORK_DIAG_PER_AGENT ))
+
+    if (( awake_count >= NETWORK_SWARM_MIN_AWAKE )) \
+       && (( tcp_established >= NETWORK_SWARM_MIN_TCP )); then
+        swarm_network_pressure=1
+    fi
+
+    if (( swarm_network_pressure == 1 )) \
+       || { (( awake_count >= NETWORK_DIAG_MIN_AWAKE )) \
+            && (( tcp_established >= NETWORK_DIAG_MIN_TCP )) \
+            && (( tcp_established > network_diag_threshold )); }; then
+        network_pressure=1
+        if (( now - last_network_diag_epoch >= NETWORK_DIAG_COOLDOWN_SEC )); then
+            sockets_per_agent_x10=$(( tcp_established * 10 / awake_count ))
+            log "network pressure: tcp_established=$tcp_established awake=$awake_count sockets_per_agent=$(( sockets_per_agent_x10 / 10 )).$(( sockets_per_agent_x10 % 10 )) baseline_per_agent=$NETWORK_DIAG_PER_AGENT min_tcp=$NETWORK_DIAG_MIN_TCP swarm_pressure=$swarm_network_pressure swarm_min_awake=$NETWORK_SWARM_MIN_AWAKE swarm_min_tcp=$NETWORK_SWARM_MIN_TCP"
+            log_tcp_pressure_detail
+            last_network_diag_epoch=$now
+        fi
+    fi
+
+    oom_trigger=0
+    previous_oom_kill_count=$last_oom_kill_count
+    if [ -n "$last_oom_kill_count" ] && (( oom_kill_count > last_oom_kill_count )); then
+        oom_trigger=1
+    fi
+    last_oom_kill_count=$oom_kill_count
+
+    # Heartbeat condition: emit on the slow cadence OR when any
+    # PSI dimension is non-trivial. Adding io_psi / mem_psi to the
+    # trigger means we get a journal line during disk-bound or
+    # memory-reclaim stalls even when cpu_psi stays at 0 — exactly
+    # the blind spot in the previous design.
+    if (( now - last_heartbeat_epoch >= HEARTBEAT_SEC )) \
+       || (( cpu_psi >= 20 )) \
+       || (( io_psi >= 20 )) \
+       || (( mem_psi >= 20 )); then
+        log "heartbeat mem_current=$mem_current mem_high=$mem_high cpu_psi_some=$cpu_psi io_psi_some=$io_psi mem_psi_some=$mem_psi oom_kill=$oom_kill_count tcp_established=$tcp_established awake=$awake_count network_pressure=$network_pressure swarm_pressure=$swarm_network_pressure"
+        last_heartbeat_epoch=$now
+    fi
+
+    if (( oom_trigger == 1 || cpu_psi >= PANIC_PSI_THRESHOLD || io_psi >= PANIC_PSI_THRESHOLD || mem_psi >= PANIC_PSI_THRESHOLD )); then
+        cooldown=$PANIC_COOLDOWN_SEC
+    else
+        cooldown=$NORMAL_COOLDOWN_SEC
+    fi
+    if (( now - last_freeze_epoch < cooldown )); then
+        continue
+    fi
+
+    if (( cpu_psi >= SUSTAINED_PSI_THRESHOLD )); then
+        sustained_cpu_psi_count=$(( sustained_cpu_psi_count + 1 ))
+    else
+        sustained_cpu_psi_count=0
+    fi
+    if (( io_psi >= SUSTAINED_PSI_THRESHOLD )); then
+        sustained_io_psi_count=$(( sustained_io_psi_count + 1 ))
+    else
+        sustained_io_psi_count=0
+    fi
+    if (( mem_psi >= SUSTAINED_PSI_THRESHOLD )); then
+        sustained_mem_psi_count=$(( sustained_mem_psi_count + 1 ))
+    else
+        sustained_mem_psi_count=0
+    fi
+
+    trigger_reasons=""
+    update_psi_trigger cpu "$cpu_psi" "$sustained_cpu_psi_count"
+    sustained_cpu_psi_count=$psi_next_count
+    update_psi_trigger io "$io_psi" "$sustained_io_psi_count"
+    sustained_io_psi_count=$psi_next_count
+    update_psi_trigger memory "$mem_psi" "$sustained_mem_psi_count"
+    sustained_mem_psi_count=$psi_next_count
+
+    if (( oom_trigger == 0 )) && [ -z "$trigger_reasons" ]; then
+        continue
+    fi
+
+    if (( oom_trigger == 1 )); then
+        log "trigger OOM: user.slice oom_kill increased ${previous_oom_kill_count:-unknown} -> $oom_kill_count"
+    fi
+    if [ -n "$trigger_reasons" ]; then
+        log "trigger PSI: $trigger_reasons"
+    fi
+
+    if freeze_heaviest_n "pressure" 1; then
+        last_freeze_epoch=$now
+    fi
+done

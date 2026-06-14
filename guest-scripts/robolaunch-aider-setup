@@ -1,0 +1,58 @@
+#!/bin/bash
+# robolaunch-aider-setup — Install aider as a RoboLaunch agent
+#
+# aider (https://aider.chat) is an open-source AI pair programmer CLI.
+# It speaks to OpenAI / Anthropic / any OpenAI-compatible endpoint.
+# We install it via pip and wrap it so it picks up the MCP stub
+# exactly like claude-code and codex do.
+#
+# Run once after first boot (or on "Update CLIs").
+
+set -euo pipefail
+
+HOME_DIR=/home/app-user
+AIDER_BIN="$HOME_DIR/.local/bin/aider"
+WRAPPER_BIN="$HOME_DIR/.local/bin/robolaunch-aider"
+
+log() { echo "robolaunch-aider-setup: $*"; }
+
+log "Installing aider via pip..."
+pip3 install --user --upgrade aider-chat --break-system-packages 2>/dev/null \
+  || pip3 install --user --upgrade aider-chat
+
+log "aider installed at: $(which aider 2>/dev/null || echo $AIDER_BIN)"
+
+# Write a wrapper that pre-configures aider for RoboLaunch:
+# - Uses the MCP stub as the tool bridge
+# - Sets model based on ROBOLAUNCH_AGENT_TYPE env
+# - Launches in /home/app-user/projects/<agent_name>
+cat > "$WRAPPER_BIN" << 'EOF'
+#!/bin/bash
+# RoboLaunch aider wrapper
+# Env vars injected by lifecycle.rs (same as claude/codex):
+#   ROBOLAUNCH_AGENT_ID, ROBOLAUNCH_AGENT_NAME, ROBOLAUNCH_AGENT_TYPE
+#   ROBOLAUNCH_GATEWAY_HOST, ROBOLAUNCH_GATEWAY_PORT
+#   ROBOLAUNCH_AGENT_MCP_TOKEN
+
+PROJECT_DIR="/home/app-user/projects/${ROBOLAUNCH_AGENT_NAME:-default}"
+mkdir -p "$PROJECT_DIR"
+cd "$PROJECT_DIR"
+
+# Pick model — default to claude-3-5-sonnet, fallback to gpt-4o
+AIDER_MODEL="${AIDER_MODEL:-claude-3-5-sonnet-20241022}"
+
+# aider reads ANTHROPIC_API_KEY or OPENAI_API_KEY from env
+# The host Tauri app should inject these via the agent launch env
+exec aider \
+  --model "$AIDER_MODEL" \
+  --no-auto-commits \
+  --no-git \
+  --pretty \
+  "$@"
+EOF
+
+chmod +x "$WRAPPER_BIN"
+chown app-user:app-user "$WRAPPER_BIN"
+
+log "Wrapper installed at $WRAPPER_BIN"
+log "Done. Use agent type 'aider' in RoboLaunch."

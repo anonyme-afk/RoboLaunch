@@ -1,0 +1,66 @@
+#!/bin/sh
+# Post-makefs provisioning for the qcow2 user volume mounted at
+# /home/app-user.
+#
+# The qcow2 starts empty on first boot; `x-systemd.makefs` in
+# /etc/fstab formats it fresh as ext4, and the mount hides whatever
+# /home/app-user contained in the squashfs layer. After mount the dir
+# is root-owned and bare — we need to lay down the skeleton the rest
+# of the guest expects (projects root, user-tier CLI dirs, ssh dir,
+# npm cache) with app-user ownership so:
+#   - the host can `mkdir -p /home/app-user/projects/<name>` over ssh,
+#   - `npm install -g` (NPM_CONFIG_PREFIX=$HOME/npm-global) works,
+#   - Claude's install.sh (writes $HOME/.claude + $HOME/.local/bin)
+#     works,
+#   - ssh-keygen + authkeys land their files in ~/.ssh with the
+#     permissions sshd StrictModes would expect.
+#
+# Short-circuits on subsequent boots via a versioned sentinel: `chown
+# -R ~app-user/projects` was a ~300 ms fixed cost on the critical path
+# to sshd even though everything was already owned correctly. Bump
+# SENTINEL_VERSION when this script's layout changes so existing
+# qcow2s rerun provisioning.
+#
+# Resize runs before the sentinel fast path on every boot. Host-side
+# `qemu-img resize` can grow the sparse qcow2 virtual size for existing
+# users, but ext4 needs an online `resize2fs /dev/vdb` while mounted to
+# expose that room inside the guest.
+
+set -eu
+
+HOME_DIR=/home/app-user
+SENTINEL=${HOME_DIR}/.robolaunch-init-v1
+
+if command -v resize2fs >/dev/null 2>&1; then
+    if ! resize2fs /dev/vdb >/dev/null 2>&1; then
+        echo "robolaunch-user-volume-init: resize2fs /dev/vdb failed; continuing with current filesystem size" >&2
+    fi
+else
+    echo "robolaunch-user-volume-init: resize2fs missing; qcow2 growth will not be visible in guest" >&2
+fi
+
+if [ -f "${SENTINEL}" ]; then
+    exit 0
+fi
+
+mkdir -p "${HOME_DIR}/.local/bin" \
+         "${HOME_DIR}/npm-global" \
+         "${HOME_DIR}/.npm" \
+         "${HOME_DIR}/.ssh" \
+         "${HOME_DIR}/projects"
+
+# sshd's StrictModes walk accepts 0700 on ~/.ssh only. The other dirs
+# inherit the default umask (0755) from mkdir -p.
+chmod 0700 "${HOME_DIR}/.ssh"
+
+chown app-user:app-user "${HOME_DIR}"
+chown -R app-user:app-user "${HOME_DIR}/.local" \
+                           "${HOME_DIR}/npm-global" \
+                           "${HOME_DIR}/.npm" \
+                           "${HOME_DIR}/.ssh" \
+                           "${HOME_DIR}/projects"
+
+# Write the sentinel last so a crash mid-provisioning leaves the
+# script willing to retry on the next boot.
+touch "${SENTINEL}"
+chown app-user:app-user "${SENTINEL}"
