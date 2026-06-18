@@ -1,3 +1,4 @@
+#!/bin/sh
 # PATH layering for the embedded guest.
 #
 # /home/app-user is on the qcow2 user volume (see /etc/fstab), so

@@ -1,8 +1,13 @@
 {
   "name": "robolaunch-frontend",
   "version": "1.0.0",
+  "type": "module",
   "scripts": {
-    "dev": "npx serve . -p 5173",
-    "build": "mkdir -p dist && cp index.html dist/"
+    "dev": "vite",
+    "build": "mkdir -p dist && cp index.html dist/",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^5.0.0"
   }
 }

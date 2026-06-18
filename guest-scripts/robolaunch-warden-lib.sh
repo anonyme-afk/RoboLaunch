@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # Shared helpers for `robolaunch-warden`.
 #
 # Keep this file side-effect-light: the main daemon owns policy
@@ -51,6 +52,9 @@ update_psi_trigger() {
         psi_next_count=0
         return
     fi
+    # psi_next_count est une variable globale lue par robolaunch-warden
+    # après chaque appel. SC2034 est un faux positif ici.
+    # shellcheck disable=SC2034
     psi_next_count=$sustained_count
 }
 

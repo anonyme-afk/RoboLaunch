@@ -78,8 +78,8 @@ async fn handle(
         .stderr(std::process::Stdio::null())
         .spawn()?;
 
-    let mcp_stdin  = mcp.stdin.take().unwrap();
-    let mcp_stdout = mcp.stdout.take().unwrap();
+    let mcp_stdin  = mcp.stdin.take().expect("mcp.bat lancé sans Stdio::piped() sur stdin");
+    let mcp_stdout = mcp.stdout.take().expect("mcp.bat lancé sans Stdio::piped() sur stdout");
 
     // Map id JSON-RPC → canal de réponse, pour les requêtes venant de la
     // gateway HTTP (/mcp/rpc). Partagée entre la tâche d'écriture (qui y

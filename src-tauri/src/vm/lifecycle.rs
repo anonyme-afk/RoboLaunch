@@ -242,7 +242,7 @@ impl VmManager {
 async fn create_qcow2(vm_dir: &Path, out: &Path, size: &str) -> Result<()> {
     let bin = vm_dir.join("qemu-img.exe");
     let st  = Command::new(&bin)
-        .args(["create", "-f", "qcow2", out.to_str().unwrap(), size])
+        .args(["create", "-f", "qcow2", out.to_str().expect("chemin qcow2 non-UTF-8"), size])
         .status().await?;
     anyhow::ensure!(st.success(), "qemu-img create failed");
     info!("qcow2 created: {}", out.display());
@@ -281,8 +281,8 @@ async fn launch_qemu(
             "-nographic",
             "-m", "4096",
             "-smp", "4",
-            "-kernel", vmlinuz.to_str().unwrap(),
-            "-initrd", initrd.to_str().unwrap(),
+            "-kernel", vmlinuz.to_str().expect("chemin vmlinuz non-UTF-8"),
+            "-initrd", initrd.to_str().expect("chemin initrd non-UTF-8"),
             "-append", &cmdline,
             "-drive", &format!(
                 "file={},format=raw,if=virtio,readonly=on",

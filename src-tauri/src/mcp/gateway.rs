@@ -68,7 +68,9 @@ pub async fn start_gateway(vm: VmManager) -> Result<(u16, GatewayState)> {
     let port = listener.local_addr()?.port();
     info!("Gateway HTTP démarré sur port={port}");
     tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
+        if let Err(e) = axum::serve(listener, app).await {
+            tracing::error!("Gateway HTTP arrêtée: {e:#}");
+        }
     });
     Ok((port, state))
 }
