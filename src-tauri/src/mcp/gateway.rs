@@ -5,18 +5,17 @@
 use anyhow::Result;
 use axum::{
     body::Bytes,
-    extract::{Multipart, State},
+    extract::State,
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, RwLock};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::vm::lifecycle::VmManager;
@@ -76,12 +75,19 @@ pub async fn start_gateway(vm: VmManager) -> Result<(u16, GatewayState)> {
 
 // ─── Authentification ─────────────────────────────────────────────────────────
 
+/// Extrait le token MCP d'une requête. `guest-scripts/mcp-stub.cjs` envoie
+/// `Authorization: Bearer <token>` ; on garde aussi les anciens en-têtes
+/// `X-RoboLaunch-Token` / `X-VibeStarter-Token` pour compat/tests manuels.
+fn extract_token(headers: &HeaderMap) -> Option<String> {
+    let raw = headers.get("Authorization")
+        .or_else(|| headers.get("X-RoboLaunch-Token"))
+        .or_else(|| headers.get("X-VibeStarter-Token"))
+        .and_then(|v| v.to_str().ok())?;
+    Some(raw.trim_start_matches("Bearer ").trim_start_matches("bearer ").to_string())
+}
+
 async fn auth_agent(headers: &HeaderMap, state: &GatewayState) -> Option<String> {
-    let token = headers.get("X-RoboLaunch-Token")
-        .or_else(|| headers.get("X-VibeStarter-Token")) // compat
-        .and_then(|v| v.to_str().ok())?
-        .trim_start_matches("Bearer ")
-        .to_string();
+    let token = extract_token(headers)?;
     state.tokens.read().await.get(&token).cloned()
 }
 
@@ -100,8 +106,14 @@ async fn rpc(
     State(st): State<GatewayState>,
     headers:   HeaderMap,
     Json(body): Json<serde_json::Value>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     debug!("MCP RPC: {body}");
+
+    if auth_agent(&headers, &st).await.is_none() {
+        return (StatusCode::UNAUTHORIZED,
+                 Json(serde_json::json!({ "error": "Unauthorized" })))
+            .into_response();
+    }
 
     let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("");
 
@@ -116,12 +128,11 @@ async fn rpc(
         let (reply_tx, reply_rx) = oneshot::channel();
         let req = RobloxReq { body, reply_tx };
         if tx.send(req).await.is_ok() {
-            match tokio::time::timeout(
+            if let Ok(Ok(resp)) = tokio::time::timeout(
                 std::time::Duration::from_secs(30),
                 reply_rx,
             ).await {
-                Ok(Ok(resp)) => return (StatusCode::OK, Json(resp)).into_response(),
-                _ => {}
+                return (StatusCode::OK, Json(resp)).into_response();
             }
         }
     }
@@ -153,20 +164,22 @@ async fn handle_internal(
 async fn upload_file(
     State(st): State<GatewayState>,
     headers: HeaderMap,
-    mut multipart: Multipart,
+    body: Bytes,
 ) -> impl IntoResponse {
     if auth_agent(&headers, &st).await.is_none() {
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error":"Unauthorized"}))).into_response();
     }
-    while let Ok(Some(field)) = multipart.next_field().await {
-        if let Ok(data) = field.bytes().await {
-            let id = Uuid::new_v4().to_string();
-            info!("File upload: {id} ({} bytes)", data.len());
-            st.file_store.write().await.insert(id.clone(), data.to_vec());
-            return (StatusCode::OK, Json(serde_json::json!({ "serverFileId": id }))).into_response();
-        }
+    if body.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"No file"}))).into_response();
     }
-    (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"No file"}))).into_response()
+    let file_name = headers.get("X-File-Name")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unnamed")
+        .to_string();
+    let id = Uuid::new_v4().to_string();
+    info!("File upload: {id} ({file_name}, {} bytes)", body.len());
+    st.file_store.write().await.insert(id.clone(), body.to_vec());
+    (StatusCode::OK, Json(serde_json::json!({ "serverFileId": id }))).into_response()
 }
 
 async fn close_agent(
@@ -175,14 +188,9 @@ async fn close_agent(
 ) -> impl IntoResponse {
     if let Some(agent_id) = auth_agent(&headers, &st).await {
         info!("Agent {agent_id} se déconnecte");
-        // Nettoyer le token
-        let token = headers.get("X-RoboLaunch-Token")
-            .or_else(|| headers.get("X-VibeStarter-Token"))
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .trim_start_matches("Bearer ")
-            .to_string();
-        st.tokens.write().await.remove(&token);
+        if let Some(token) = extract_token(&headers) {
+            st.tokens.write().await.remove(&token);
+        }
     }
     StatusCode::NO_CONTENT
 }

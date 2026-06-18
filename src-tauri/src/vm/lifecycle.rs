@@ -10,10 +10,11 @@ use std::process::Stdio;
 use std::sync::Arc;
 use tokio::process::Command;
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use russh_keys::PublicKeyBase64;
+use tracing::info;
 use uuid::Uuid;
 
-use crate::agent::{AgentInfo, AgentStatus};
+use crate::agent::{AgentInfo, AgentStatus, AgentType};
 use crate::mcp::gateway::ToolboxItem;
 use super::ssh::SshClient;
 
@@ -66,8 +67,7 @@ impl VmManager {
         let key = russh_keys::key::KeyPair::generate_ed25519()
             .context("generate SSH keypair")?;
         let pubkey_b64 = {
-            let pk = russh_keys::PublicKey::from(&key);
-            let line = format!("ssh-ed25519 {} robolaunch-host", pk.public_key_base64());
+            let line = format!("ssh-ed25519 {} robolaunch-host", key.public_key_base64());
             base64::engine::general_purpose::STANDARD.encode(line)
         };
         *self.0.ssh_key.write().await = Some(key);
@@ -143,13 +143,12 @@ impl VmManager {
             .map(|b| format!("{b:02x}"))
             .collect();
 
-        let binary = match agent_type {
-            "claude" => "claude",
-            "codex"  => "codex",
-            "agy"    => "agy",
-            "aider"  => "robolaunch-aider",
-            other    => anyhow::bail!("Unknown agent type: {other}"),
-        };
+        let binary = agent_type.parse::<AgentType>()?.binary();
+
+        // Échappement basique pour insertion entre apostrophes dans la
+        // commande shell distante (le nom vient de l'UI, donc potentiellement
+        // arbitraire — une apostrophe non échappée casserait la commande).
+        let safe_name = name.replace('\'', "'\\''");
 
         // Env vars: VIBESTARTER_ → ROBOLAUNCH_ pour compatibilité mcp-stub interne
         // On garde les deux préfixes pour compatibilité avec mcp-stub.cjs original
@@ -161,8 +160,8 @@ impl VmManager {
              --scope \
              -E ROBOLAUNCH_AGENT_ID={id} \
              -E ROBOLAUNCH_AGENT_NUM={num} \
-             -E ROBOLAUNCH_AGENT_NAME='{name}' \
-             -E ROBOLAUNCH_TAB_LABEL='{name}' \
+             -E ROBOLAUNCH_AGENT_NAME='{safe_name}' \
+             -E ROBOLAUNCH_TAB_LABEL='{safe_name}' \
              -E ROBOLAUNCH_AGENT_TYPE={agent_type} \
              -E ROBOLAUNCH_GATEWAY_HOST={HOST_ALIAS} \
              -E ROBOLAUNCH_GATEWAY_PORT={gateway_port} \
@@ -257,7 +256,7 @@ async fn launch_gvproxy(vm_dir: &Path, ssh_port: u16) -> Result<()> {
         .args([
             "-listen",       "vsock://:1024",
             "-forward-sock", &format!("tcp://127.0.0.1:{ssh_port}"),
-            "-forward-dest", "10.0.2.15:22",
+            "-forward-dest", &format!("{GUEST_IP}:22"),
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -266,7 +265,7 @@ async fn launch_gvproxy(vm_dir: &Path, ssh_port: u16) -> Result<()> {
 }
 
 async fn launch_qemu(
-    vm_dir: &Path, qcow2: &Path, authkey_b64: &str, ssh_port: u16,
+    vm_dir: &Path, qcow2: &Path, authkey_b64: &str, _ssh_port: u16,
 ) -> Result<tokio::process::Child> {
     let qemu     = vm_dir.join("qemu-system-x86_64.exe");
     let squashfs = vm_dir.join("robolaunch-guest.squashfs");

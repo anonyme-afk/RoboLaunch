@@ -1,20 +1,24 @@
 #!/bin/bash
-# build-squashfs.sh — Rebuild vibestarter-guest.squashfs
+# build-squashfs.sh — Reconstruit l'image squashfs invité RoboLaunch
 #
-# Run this on Linux (or WSL) to inject the rebuilt guest scripts
-# into a copy of the original squashfs.
+# À lancer sous Linux (ou WSL). Ce script injecte les scripts guest-scripts/
+# de RoboLaunch dans une copie de l'image de base (à l'origine celle de
+# VibeStarter), en remplaçant les anciens scripts vibestarter-* par les
+# nouveaux robolaunch-*.
 #
 # Usage:
-#   ./build-squashfs.sh /path/to/original/vibestarter-guest.squashfs
+#   ./build-squashfs.sh /chemin/vers/image-de-base.squashfs
 #
-# Output: vibestarter-guest-rebuilt.squashfs (drop it in resources/vm/)
+# Sortie: robolaunch-guest-rebuilt.squashfs
+#         (à renommer en robolaunch-guest.squashfs et à copier dans
+#          src-tauri/resources/vm/)
 
 set -euo pipefail
 
 ORIGINAL="${1:-vibestarter-guest.squashfs}"
 WORKDIR="$(mktemp -d)"
-SCRIPTS_DIR="$(dirname "$0")/guest-scripts"
-OUT="vibestarter-guest-rebuilt.squashfs"
+SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)/guest-scripts"
+OUT="robolaunch-guest-rebuilt.squashfs"
 
 log() { echo "[build-squashfs] $*"; }
 
@@ -22,72 +26,75 @@ cleanup() { rm -rf "$WORKDIR"; }
 trap cleanup EXIT
 
 if [ ! -f "$ORIGINAL" ]; then
-  echo "Usage: $0 /path/to/vibestarter-guest.squashfs" >&2
+  echo "Usage: $0 /chemin/vers/image-de-base.squashfs" >&2
+  echo "(l'image de base d'origine, ex: vibestarter-guest.squashfs)" >&2
   exit 1
 fi
 
-command -v unsquashfs >/dev/null || { echo "Install squashfs-tools first: sudo apt install squashfs-tools"; exit 1; }
-command -v mksquashfs >/dev/null || { echo "Install squashfs-tools first: sudo apt install squashfs-tools"; exit 1; }
+command -v unsquashfs >/dev/null || { echo "Installe squashfs-tools: sudo apt install squashfs-tools"; exit 1; }
+command -v mksquashfs >/dev/null || { echo "Installe squashfs-tools: sudo apt install squashfs-tools"; exit 1; }
 
-log "Extracting $ORIGINAL..."
+log "Extraction de $ORIGINAL..."
 unsquashfs -d "$WORKDIR/root" "$ORIGINAL"
 
-log "Installing guest scripts..."
+log "Installation des scripts RoboLaunch..."
 
-# sbin scripts (system daemons + boot scripts)
+# Scripts sbin (daemons système + scripts de boot)
 SBIN="$WORKDIR/root/usr/local/sbin"
 mkdir -p "$SBIN"
 for f in \
-  vibestarter-warden \
-  vibestarter-net-up \
-  vibestarter-authkeys \
-  vibestarter-ssh-keygen \
-  vibestarter-zram \
-  vibestarter-user-volume-init \
-  vibestarter-aider-setup; do
+  robolaunch-warden \
+  robolaunch-net-up \
+  robolaunch-authkeys \
+  robolaunch-ssh-keygen \
+  robolaunch-zram \
+  robolaunch-user-volume-init \
+  robolaunch-aider-setup; do
   if [ -f "$SCRIPTS_DIR/$f" ]; then
     install -m 755 "$SCRIPTS_DIR/$f" "$SBIN/$f"
     log "  → /usr/local/sbin/$f"
+  else
+    log "  ! manquant: $SCRIPTS_DIR/$f (ignoré)"
   fi
 done
 
-# lib (warden helper)
+# lib (helper du warden)
 LIB="$WORKDIR/root/usr/local/lib"
 mkdir -p "$LIB"
-install -m 644 "$SCRIPTS_DIR/vibestarter-warden-lib.sh" "$LIB/vibestarter-warden-lib.sh"
-log "  → /usr/local/lib/vibestarter-warden-lib.sh"
+install -m 644 "$SCRIPTS_DIR/robolaunch-warden-lib.sh" "$LIB/robolaunch-warden-lib.sh"
+log "  → /usr/local/lib/robolaunch-warden-lib.sh"
 
-# profile.d (PATH for agents)
+# profile.d (PATH pour les agents)
 PROFILE="$WORKDIR/root/etc/profile.d"
 mkdir -p "$PROFILE"
-install -m 644 "$SCRIPTS_DIR/vibestarter-path.sh" "$PROFILE/vibestarter-path.sh"
-log "  → /etc/profile.d/vibestarter-path.sh"
+install -m 644 "$SCRIPTS_DIR/robolaunch-path.sh" "$PROFILE/robolaunch-path.sh"
+log "  → /etc/profile.d/robolaunch-path.sh"
 
-# opt/vibestarter (MCP bridges)
-OPT="$WORKDIR/root/opt/vibestarter"
+# opt/robolaunch (bridges MCP)
+OPT="$WORKDIR/root/opt/robolaunch"
 mkdir -p "$OPT"
-install -m 755 "$SCRIPTS_DIR/mcp-stub.cjs"            "$OPT/mcp-stub.cjs"
-install -m 755 "$SCRIPTS_DIR/roblox-mcp-proxy.cjs"    "$OPT/roblox-mcp-proxy.cjs"
-log "  → /opt/vibestarter/mcp-stub.cjs"
-log "  → /opt/vibestarter/roblox-mcp-proxy.cjs"
+install -m 755 "$SCRIPTS_DIR/mcp-stub.cjs"         "$OPT/mcp-stub.cjs"
+install -m 755 "$SCRIPTS_DIR/roblox-mcp-proxy.cjs" "$OPT/roblox-mcp-proxy.cjs"
+log "  → /opt/robolaunch/mcp-stub.cjs"
+log "  → /opt/robolaunch/roblox-mcp-proxy.cjs"
 
-# home/app-user skeleton (aider wrapper will be installed at runtime)
+# squelette home/app-user (le wrapper aider est installé au runtime)
 APPUSER="$WORKDIR/root/home/app-user/.local/bin"
 mkdir -p "$APPUSER"
 
-# systemd units (already in squashfs, but update warden unit just in case)
+# unité systemd du warden
 SYSTEMD="$WORKDIR/root/etc/systemd/system"
 mkdir -p "$SYSTEMD"
 
-cat > "$SYSTEMD/vibestarter-warden.service" << 'UNIT'
+cat > "$SYSTEMD/robolaunch-warden.service" << 'UNIT'
 [Unit]
-Description=Vibestarter in-guest memory warden
+Description=RoboLaunch in-guest memory warden
 After=multi-user.target
 StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart=/usr/local/sbin/vibestarter-warden
+ExecStart=/usr/local/sbin/robolaunch-warden
 Restart=always
 RestartSec=1
 StandardOutput=journal
@@ -105,9 +112,9 @@ User=root
 [Install]
 WantedBy=multi-user.target
 UNIT
-log "  → /etc/systemd/system/vibestarter-warden.service"
+log "  → /etc/systemd/system/robolaunch-warden.service"
 
-log "Rebuilding squashfs (zstd compression)..."
+log "Reconstruction du squashfs (compression zstd)..."
 mksquashfs "$WORKDIR/root" "$OUT" \
   -comp zstd \
   -Xcompression-level 9 \
@@ -115,9 +122,9 @@ mksquashfs "$WORKDIR/root" "$OUT" \
   -no-progress
 
 SIZE=$(du -sh "$OUT" | cut -f1)
-log "Done! Output: $OUT ($SIZE)"
+log "Terminé! Sortie: $OUT ($SIZE)"
 log ""
-log "Next steps:"
-log "  1. Copy $OUT to your Tauri resources/vm/ folder"
-log "  2. Rename it to vibestarter-guest.squashfs"
-log "  3. Build the Tauri app: cargo tauri build"
+log "Étapes suivantes:"
+log "  1. Copie $OUT dans src-tauri/resources/vm/"
+log "  2. Renomme-le en robolaunch-guest.squashfs"
+log "  3. Build l'app Tauri: cargo tauri build"

@@ -18,6 +18,9 @@ impl AgentType {
             AgentType::Aider  => "robolaunch-aider",
         }
     }
+    /// Identifiant canonique du type, utile pour la sérialisation/les logs.
+    /// Non utilisé en interne actuellement, conservé comme API publique.
+    #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
             AgentType::Claude => "claude",

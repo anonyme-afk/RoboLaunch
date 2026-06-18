@@ -81,8 +81,15 @@ async fn handle(
     let mcp_stdin  = mcp.stdin.take().unwrap();
     let mcp_stdout = mcp.stdout.take().unwrap();
 
+    // Map id JSON-RPC → canal de réponse, pour les requêtes venant de la
+    // gateway HTTP (/mcp/rpc). Partagée entre la tâche d'écriture (qui y
+    // insère juste avant d'écrire vers mcp.bat) et la tâche de lecture
+    // (qui y retire pour router la réponse vers l'appelant HTTP).
+    let pending: Arc<RwLock<HashMap<String, oneshot::Sender<Value>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+
     // Canal unique vers mcp.bat (FIX race condition)
-    let (write_tx, write_rx) = mpsc::channel::<(Value, Option<oneshot::Sender<Value>>)>(64);
+    let (write_tx, mut write_rx) = mpsc::channel::<(Value, Option<oneshot::Sender<Value>>)>(64);
 
     // Canal exposé à la gateway HTTP
     let (gw_tx, mut gw_rx) = mpsc::channel::<RobloxReq>(32);
@@ -96,23 +103,34 @@ async fn handle(
         }
     });
 
-    // Tâche: écrire vers mcp.bat (séquentiellement)
+    // Tâche: écrire vers mcp.bat (séquentiellement), en enregistrant le
+    // canal de réponse attendu par id JSON-RPC AVANT d'écrire la ligne,
+    // pour éviter une course avec la réponse qui pourrait arriver vite.
     let mut mcp_in = mcp_stdin;
+    let pending_write = pending.clone();
     tokio::spawn(async move {
-        let mut rx: mpsc::Receiver<(Value, Option<oneshot::Sender<Value>>)> = write_rx;
-        while let Some((body, _reply)) = rx.recv().await {
+        while let Some((body, reply)) = write_rx.recv().await {
+            if let Some(reply_tx) = reply {
+                match id_key(&body) {
+                    Some(key) => { pending_write.write().await.insert(key, reply_tx); }
+                    None => {
+                        // Pas d'id JSON-RPC exploitable: impossible de router une
+                        // réponse plus tard, on répond tout de suite plutôt que de
+                        // laisser l'appelant HTTP attendre 30s pour rien.
+                        let _ = reply_tx.send(serde_json::json!({
+                            "error": "Requête sans id JSON-RPC valide"
+                        }));
+                    }
+                }
+            }
             let line = serde_json::to_string(&body).unwrap_or_default() + "\n";
             if mcp_in.write_all(line.as_bytes()).await.is_err() { break; }
         }
     });
 
-    // Tâche: lire les réponses de mcp.bat et les router
-    // On garde une map id→oneshot pour les réponses gateway
-    let pending: Arc<RwLock<HashMap<String, oneshot::Sender<Value>>>> =
-        Arc::new(RwLock::new(HashMap::new()));
-
-    let mut mcp_reader  = BufReader::new(mcp_stdout);
+    let mut mcp_reader   = BufReader::new(mcp_stdout);
     let mut guest_writer = writer;
+    let pending_read = pending.clone();
 
     // Tâche lecture mcp.bat → guest + gateway
     tokio::spawn(async move {
@@ -124,8 +142,8 @@ async fn handle(
                 Ok(_) => {
                     if let Ok(v) = serde_json::from_str::<Value>(&line) {
                         // Essaie de router vers la gateway si id connu
-                        if let Some(id) = v.get("id").and_then(|i| Some(i.to_string())) {
-                            if let Some(tx) = pending.write().await.remove(&id) {
+                        if let Some(key) = id_key(&v) {
+                            if let Some(tx) = pending_read.write().await.remove(&key) {
                                 let _ = tx.send(v.clone());
                                 continue;
                             }
@@ -160,4 +178,13 @@ async fn handle(
     *roblox_tx_slot.write().await = None;
     info!("Roblox bridge: connexion fermée");
     Ok(())
+}
+
+/// Clé stable dérivée de l'id JSON-RPC d'un message (sérialisation canonique
+/// de la valeur `id`), utilisée pour faire correspondre une requête sortante
+/// à sa réponse entrante. Tant que l'insertion et la lecture utilisent la
+/// même extraction, le format exact (avec ou sans guillemets) n'a pas
+/// d'importance — seule la cohérence compte.
+fn id_key(v: &Value) -> Option<String> {
+    v.get("id").map(|i| i.to_string())
 }

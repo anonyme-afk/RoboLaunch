@@ -34,7 +34,7 @@ impl SshClient {
         let stream = TcpStream::connect((host, port))
             .await
             .with_context(|| format!("TCP {host}:{port}"))?;
-        let mut sess = client::connect(cfg, stream, GuestHandler)
+        let mut sess = client::connect_stream(cfg, stream, GuestHandler)
             .await
             .context("SSH handshake")?;
         let ok = sess
@@ -71,7 +71,7 @@ impl SshClient {
     pub async fn open_pty(
         &self, cmd: &str, cols: u32, rows: u32,
     ) -> Result<russh::Channel<russh::client::Msg>> {
-        let mut ch = self.session.channel_open_session().await?;
+        let ch = self.session.channel_open_session().await?;
         ch.request_pty(true, "xterm-256color", cols, rows, 0, 0, &[]).await?;
         ch.exec(true, cmd).await?;
         Ok(ch)

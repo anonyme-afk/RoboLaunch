@@ -1,0 +1,16 @@
+Ce dossier doit contenir, avant de lancer `cargo tauri build` (ou même
+`cargo check`/`cargo tauri dev`), les fichiers de la VM Linux :
+
+  qemu-system-x86_64.exe
+  qemu-img.exe
+  gvproxy.exe
+  *.dll (dépendances QEMU)
+  robolaunch-guest.squashfs   (voir build-squashfs.sh à la racine du repo)
+  vmlinuz
+  initrd.img
+
+Ces fichiers sont volumineux et exclus du repo Git via .gitignore — ce
+fichier texte existe uniquement pour que le dossier `resources/vm/` soit
+suivi par Git et présent après un `git clone`, sinon `tauri.conf.json`
+(bundle.resources = "resources/**/*") fait planter le build dès la
+compilation, avant même d'avoir copié quoi que ce soit ici.

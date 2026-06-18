@@ -10,6 +10,7 @@ use tracing::info;
 
 pub struct AppState {
     pub vm:            vm::lifecycle::VmManager,
+    pub gateway:       mcp::gateway::GatewayState,
     pub gateway_port:  u16,
     pub roblox_port:   u16,
     pub roblox_secret: String,
@@ -69,7 +70,7 @@ async fn bootstrap(app: tauri::AppHandle) -> Result<()> {
     let (roblox_port, roblox_secret) = start_roblox_bridge(gw_state.roblox_tx.clone()).await?;
     info!("Bridge Roblox port={roblox_port}");
 
-    app.manage(AppState { vm, gateway_port, roblox_port, roblox_secret });
+    app.manage(AppState { vm, gateway: gw_state, gateway_port, roblox_port, roblox_secret });
     info!("Bootstrap terminé ✓");
     Ok(())
 }
@@ -92,10 +93,21 @@ async fn cmd_launch_agent(
     agent_type: String,
     name: String,
 ) -> Result<String, String> {
-    state.vm.launch_agent(
+    let id = state.vm.launch_agent(
         &agent_type, &name,
         state.gateway_port, state.roblox_port, &state.roblox_secret,
-    ).await.map_err(|e| e.to_string())
+    ).await.map_err(|e| e.to_string())?;
+
+    // Enregistre le token MCP de l'agent auprès de la gateway HTTP.
+    // Sans ça, toutes ses requêtes authentifiées échouent en 401.
+    let agents = state.vm.list_agents().await.map_err(|e| e.to_string())?;
+    if let Some(agent) = agents.iter().find(|a| a.id == id) {
+        mcp::gateway::register_token(&state.gateway, &agent.id, &agent.mcp_token).await;
+    } else {
+        tracing::warn!("Agent {id} introuvable juste après son lancement — token non enregistré");
+    }
+
+    Ok(id)
 }
 
 #[tauri::command]
